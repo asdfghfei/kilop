@@ -1,4 +1,4 @@
-name: 🖥️ CYNET Cloud Ubuntu Terminal
+name: 🖥️ CYNET Cloud Ubuntu Linux
 
 on:
   workflow_dispatch:
@@ -9,357 +9,107 @@ jobs:
     timeout-minutes: 360
 
     steps:
-
-      # ==========================================================
-      # 1. Install host dependencies
-      # ==========================================================
-      - name: 📦 Install Cloudflared & TTYD
+      - name: 📦 Setup Ubuntu Linux Engine & Web Terminal (TTYD)
         run: |
-          set -e
+          echo "=========================================================="
+          echo "  🖥️ INSTALLING UBUNTU LINUX & SERVER SUITE..."
+          echo "=========================================================="
 
           sudo apt-get update -y -q
 
-          sudo wget -q \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -O /usr/local/bin/cloudflared
-
+          # نصب cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
           sudo chmod +x /usr/local/bin/cloudflared
 
-          sudo wget -q \
-            https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
-            -O /usr/local/bin/ttyd
-
+          # نصب ttyd
+          sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
           sudo chmod +x /usr/local/bin/ttyd
 
-          echo "✅ Cloudflared installed"
-          echo "✅ TTYD installed"
-
-
-      # ==========================================================
-      # 2. Create Ubuntu container
-      # ==========================================================
-      - name: 🐧 Create Ubuntu 24.04
-        run: |
-          set -e
-
-          docker rm -f cynet-ubuntu 2>/dev/null || true
-
+          # اجرای Ubuntu 24.04
           docker run -d \
             --name cynet-ubuntu \
-            --hostname cynet-ubuntu \
             --network host \
             ubuntu:24.04 \
             tail -f /dev/null
 
-          echo "✅ Ubuntu 24.04 started"
+          # نصب پیش‌نیازها و ابزارهای رایج Ubuntu Server
+          docker exec cynet-ubuntu apt-get update -y
 
+          docker exec cynet-ubuntu apt-get install -y -q \
+            sudo \
+            curl \
+            wget \
+            git \
+            nano \
+            vim \
+            unzip \
+            zip \
+            tar \
+            gzip \
+            ca-certificates \
+            gnupg \
+            lsb-release \
+            software-properties-common \
+            apt-transport-https \
+            net-tools \
+            iproute2 \
+            iputils-ping \
+            dnsutils \
+            openssh-client \
+            python3 \
+            python3-pip \
+            python3-venv \
+            build-essential \
+            gcc \
+            g++ \
+            make \
+            tmux \
+            screen \
+            htop \
+            jq \
+            rsync \
+            socat \
+            zsh
 
-      # ==========================================================
-      # 3. Install common Ubuntu server packages
-      # ==========================================================
-      - name: 🔧 Install Ubuntu Prerequisites
+      - name: 🌐 Launch Interactive Web Terminal & Public Link
         run: |
-          set -e
+          echo "=========================================================="
+          echo "  🎉 LAUNCHING INTERACTIVE UBUNTU WEB TERMINAL..."
+          echo "=========================================================="
 
-          docker exec cynet-ubuntu bash -c '
-            export DEBIAN_FRONTEND=noninteractive
-
-            apt-get update -y
-
-            apt-get install -y \
-              sudo \
-              curl \
-              wget \
-              git \
-              vim \
-              nano \
-              less \
-              unzip \
-              zip \
-              tar \
-              gzip \
-              bzip2 \
-              ca-certificates \
-              gnupg \
-              lsb-release \
-              software-properties-common \
-              apt-transport-https \
-              net-tools \
-              iproute2 \
-              iputils-ping \
-              dnsutils \
-              openssh-client \
-              python3 \
-              python3-pip \
-              python3-venv \
-              build-essential \
-              gcc \
-              g++ \
-              make \
-              tmux \
-              screen \
-              htop \
-              jq \
-              rsync \
-              socat \
-              zsh \
-              procps \
-              psmisc
-
-            echo
-            echo "=========================================="
-            echo "       UBUNTU 24.04 READY"
-            echo "=========================================="
-          '
-
-
-      # ==========================================================
-      # 4. Generate random access token
-      # ==========================================================
-      - name: 🔐 Generate Access Token
-        run: |
-          set -e
-
-          TOKEN=$(openssl rand -hex 32)
-
-          echo "::add-mask::$TOKEN"
-          echo "ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-          echo "✅ Access token generated"
-
-
-      # ==========================================================
-      # 5. Create authenticated terminal proxy
-      # ==========================================================
-      - name: 🌑 Start Browser Terminal
-        run: |
-          set -e
-
-          cat > terminal_proxy.py <<'PY'
-          import http.server
-          import socketserver
-          import urllib.parse
-          import http.client
-          import os
-
-          TOKEN = os.environ["ACCESS_TOKEN"]
-          TARGET_HOST = "127.0.0.1"
-          TARGET_PORT = 7681
-          PROXY_PORT = 8080
-
-          class Proxy(http.server.BaseHTTPRequestHandler):
-
-              def check_token(self):
-                  parsed = urllib.parse.urlparse(self.path)
-                  query = urllib.parse.parse_qs(parsed.query)
-
-                  supplied = query.get("token", [""])[0]
-
-                  return supplied == TOKEN
-
-              def proxy(self):
-
-                  parsed = urllib.parse.urlparse(self.path)
-
-                  path = parsed.path
-
-                  if parsed.query:
-                      path += "?" + parsed.query
-
-                  conn = http.client.HTTPConnection(
-                      TARGET_HOST,
-                      TARGET_PORT,
-                      timeout=30
-                  )
-
-                  headers = {
-                      k: v
-                      for k, v in self.headers.items()
-                      if k.lower() not in (
-                          "host",
-                          "connection"
-                      )
-                  }
-
-                  conn.request(
-                      self.command,
-                      path,
-                      headers=headers
-                  )
-
-                  response = conn.getresponse()
-
-                  self.send_response(response.status)
-
-                  for key, value in response.getheaders():
-                      if key.lower() not in (
-                          "connection",
-                          "transfer-encoding"
-                      ):
-                          self.send_header(key, value)
-
-                  self.end_headers()
-
-                  while True:
-                      data = response.read(65536)
-
-                      if not data:
-                          break
-
-                      self.wfile.write(data)
-
-                  conn.close()
-
-              def do_GET(self):
-                  if not self.check_token():
-                      self.send_response(403)
-                      self.end_headers()
-                      self.wfile.write(b"Forbidden")
-                      return
-
-                  self.proxy()
-
-              def do_POST(self):
-                  if not self.check_token():
-                      self.send_response(403)
-                      self.end_headers()
-                      return
-
-                  self.proxy()
-
-              def do_OPTIONS(self):
-                  if not self.check_token():
-                      self.send_response(403)
-                      self.end_headers()
-                      return
-
-                  self.proxy()
-
-              def log_message(self, format, *args):
-                  return
-
-
-          class ThreadedServer(
-              socketserver.ThreadingMixIn,
-              socketserver.TCPServer
-          ):
-              allow_reuse_address = True
-
-
-          with ThreadedServer(
-              ("127.0.0.1", PROXY_PORT),
-              Proxy
-          ) as server:
-
-              print(
-                  f"Secure terminal proxy listening on "
-                  f"127.0.0.1:{PROXY_PORT}"
-              )
-
-              server.serve_forever()
-          PY
-
-          # Start ttyd without username/password.
+          # اجرای وب ترمینال با تم مشکی
           ttyd \
             -W \
             -p 7681 \
             -t fontSize=16 \
-            -t 'theme={"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
+            -t theme='{"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
             docker exec -it cynet-ubuntu /bin/bash \
-            > ttyd.log 2>&1 &
+            > /dev/null 2>&1 &
 
           sleep 3
 
-          # Start token proxy.
-          python3 terminal_proxy.py > proxy.log 2>&1 &
+          # ایجاد Cloudflare Tunnel
+          cloudflared tunnel --url http://localhost:7681 > tunnel.log 2>&1 &
 
-          sleep 2
+          sleep 5
 
-          if ! curl -fsS \
-            "http://127.0.0.1:8080/?token=${ACCESS_TOKEN}" \
-            >/dev/null; then
+          for i in {1..20}; do
 
-            echo "❌ Terminal proxy failed."
-            cat proxy.log
-            exit 1
-          fi
-
-          echo "✅ Browser terminal ready"
-
-
-      # ==========================================================
-      # 6. Create Cloudflare public tunnel
-      # ==========================================================
-      - name: 🌐 Create Public Browser Link
-        run: |
-          set -e
-
-          cloudflared tunnel \
-            --url http://127.0.0.1:8080 \
-            > tunnel.log 2>&1 &
-
-          echo "⏳ Waiting for Cloudflare..."
-
-          URL=""
-
-          for i in {1..30}; do
-
-            URL=$(grep -o \
-              'https://[a-zA-Z0-9-]*\.trycloudflare\.com' \
-              tunnel.log | head -n 1 || true)
+            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
 
             if [ -n "$URL" ]; then
+              echo ""
+              echo "=========================================================="
+              echo "  🔥 YOUR UBUNTU LINUX IS LIVE & READY!"
+              echo "  👉 CLICK TO OPEN IN BROWSER: $URL"
+              echo "  --------------------------------------------------------"
+              echo "  🖥️ Ubuntu 24.04 | Black Terminal | Keyboard Active"
+              echo "=========================================================="
+              echo ""
               break
             fi
 
             sleep 2
           done
 
-          if [ -z "$URL" ]; then
-            echo "❌ Cloudflare URL was not detected."
-            cat tunnel.log
-            exit 1
-          fi
-
-          DIRECT_URL="${URL}/?token=${ACCESS_TOKEN}"
-
-          echo "::add-mask::$DIRECT_URL"
-
-          echo
-          echo "=========================================================="
-          echo "        🖥️ UBUNTU 24.04 TERMINAL IS READY"
-          echo "=========================================================="
-          echo
-          echo "🌐 DIRECT BROWSER LINK:"
-          echo
-          echo "$DIRECT_URL"
-          echo
-          echo "=========================================================="
-          echo "🌑 Black Terminal"
-          echo "🐧 Ubuntu 24.04"
-          echo "🔐 Token-protected URL"
-          echo "⏳ Temporary server"
-          echo "=========================================================="
-          echo
-
-
-      # ==========================================================
-      # 7. Keep server alive
-      # ==========================================================
-      - name: ⏳ Keep Server Online
-        run: |
-          echo "Ubuntu server is running..."
-          echo "The server remains available while this job is active."
-
-          while true; do
-
-            if ! docker ps \
-              --format '{{.Names}}' \
-              | grep -q '^cynet-ubuntu$'; then
-
-              echo "❌ Ubuntu container stopped."
-              exit 1
-            fi
-
-            sleep 30
-          done
+          tail -f tunnel.log
