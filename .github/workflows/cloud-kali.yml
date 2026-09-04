@@ -1,70 +1,229 @@
-name: 🛡️ CYNET Cloud Kali Linux
+name: 🖥️ CYNET Cloud Ubuntu Terminal
 
 on:
   workflow_dispatch:
 
 jobs:
-  launch-kali:
+  launch-ubuntu:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: 📦 Setup Kali Linux Engine & Web Terminal (TTYD)
+
+      # ======================================================
+      # 1. Install required host components
+      # ======================================================
+      - name: 📦 Install Cloudflared & TTYD
         run: |
-          echo "=========================================================="
-          echo "  🛡️ INSTALLING KALI LINUX & HACKING SUITE..."
-          echo "=========================================================="
+          set -e
+
           sudo apt-get update -y -q
-          
-          # نصب کلودفلرد
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+
+          # Cloudflared
+          sudo wget -q \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -O /usr/local/bin/cloudflared
+
           sudo chmod +x /usr/local/bin/cloudflared
 
-          # نصب وب‌ترمینال قدرتمند ttyd
-          sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
+          # TTYD
+          sudo wget -q \
+            https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
+            -O /usr/local/bin/ttyd
+
           sudo chmod +x /usr/local/bin/ttyd
 
-          # اجرای کانتینر رسمی کالی لینوکس با دسترسی روت کامل
+          echo "✅ Cloudflared installed"
+          echo "✅ TTYD installed"
+
+
+      # ======================================================
+      # 2. Create Ubuntu container
+      # ======================================================
+      - name: 🐧 Create Ubuntu 24.04 Server
+        run: |
+          set -e
+
+          docker rm -f cynet-ubuntu 2>/dev/null || true
+
           docker run -d \
-            --name cynet-kali \
-            --privileged \
+            --name cynet-ubuntu \
+            --hostname cynet-ubuntu \
             --network host \
-            -v /root:/root \
-            kalilinux/kali-rolling \
+            ubuntu:24.04 \
             tail -f /dev/null
 
-          # نصب ابزارهای اصلی کالی در پس‌زمینه
-          docker exec cynet-kali apt-get update -y
-          docker exec cynet-kali apt-get install -y -q nmap metasploit-framework sqlmap hydra curl wget python3 git sudo zsh tmux
+          echo "✅ Ubuntu 24.04 container started"
 
-      - name: 🌐 Launch Interactive Web Terminal & Public Link
+
+      # ======================================================
+      # 3. Install Ubuntu prerequisites
+      # ======================================================
+      - name: 🔧 Install Ubuntu Server Tools
         run: |
-          echo "=========================================================="
-          echo "  🎉 LAUNCHING INTERACTIVE KALI WEB TERMINAL..."
-          echo "=========================================================="
-          
-          # اجرای وب ترمینال با فلگ -W برای فعال‌سازی کامل تایپ و کیبورد
-          ttyd -W -p 7681 -t fontSize=16 -t theme='{"background": "#0f172a", "foreground": "#38bdf8", "cursor": "#38bdf8"}' docker exec -it cynet-kali /bin/bash > /dev/null 2>&1 &
+          set -e
+
+          docker exec cynet-ubuntu bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update -y
+
+            apt-get install -y \
+              sudo \
+              curl \
+              wget \
+              git \
+              vim \
+              nano \
+              less \
+              unzip \
+              zip \
+              tar \
+              gzip \
+              bzip2 \
+              ca-certificates \
+              gnupg \
+              lsb-release \
+              software-properties-common \
+              apt-transport-https \
+              net-tools \
+              iproute2 \
+              iputils-ping \
+              dnsutils \
+              openssh-client \
+              python3 \
+              python3-pip \
+              python3-venv \
+              build-essential \
+              gcc \
+              g++ \
+              make \
+              tmux \
+              screen \
+              htop \
+              jq \
+              rsync \
+              socat \
+              zsh \
+              procps \
+              psmisc
+
+            echo
+            echo "=========================================="
+            echo "      UBUNTU 24.04 READY"
+            echo "=========================================="
+          '
+
+
+      # ======================================================
+      # 4. Generate temporary browser access token
+      # ======================================================
+      - name: 🔐 Generate Temporary Access Token
+        run: |
+          TOKEN=$(openssl rand -hex 32)
+
+          echo "::add-mask::$TOKEN"
+
+          echo "ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          echo "✅ Temporary access token generated"
+
+
+      # ======================================================
+      # 5. Start TTYD
+      # ======================================================
+      - name: 🌑 Start Black Browser Terminal
+        run: |
+          set -e
+
+          # Token is used as the ttyd password.
+          # Browser clients can authenticate automatically
+          # through the generated access URL.
+
+          ttyd \
+            -W \
+            -p 7681 \
+            -c "terminal:${ACCESS_TOKEN}" \
+            -t fontSize=16 \
+            -t 'theme={"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
+            docker exec -it cynet-ubuntu /bin/bash \
+            > ttyd.log 2>&1 &
+
           sleep 3
 
-          # ایجاد تانل کلودفلر
-          cloudflared tunnel --url http://localhost:7681 > tunnel.log 2>&1 &
-          
-          sleep 5
-          for i in {1..20}; do
-            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          if ! curl -fsS http://127.0.0.1:7681/ >/dev/null; then
+            echo "❌ TTYD failed to start"
+            cat ttyd.log
+            exit 1
+          fi
+
+          echo "✅ Browser terminal started"
+
+
+      # ======================================================
+      # 6. Create Cloudflare Tunnel
+      # ======================================================
+      - name: 🌐 Create Temporary Cloudflare Tunnel
+        run: |
+          set -e
+
+          cloudflared tunnel \
+            --url http://127.0.0.1:7681 \
+            > tunnel.log 2>&1 &
+
+          echo "⏳ Waiting for Cloudflare URL..."
+
+          URL=""
+
+          for i in {1..30}; do
+
+            URL=$(grep -o \
+              'https://[a-zA-Z0-9-]*\.trycloudflare\.com' \
+              tunnel.log | head -n 1 || true)
+
             if [ -n "$URL" ]; then
-              echo ""
-              echo "=========================================================="
-              echo "  🔥 YOUR INTERACTIVE KALI LINUX IS LIVE & READY!"
-              echo "  👉 CLICK TO OPEN IN BROWSER: $URL"
-              echo "  --------------------------------------------------------"
-              echo "  ⚡ Full Root Access | 1000 Mbps Internet | Keyboard Active"
-              echo "=========================================================="
-              echo ""
               break
             fi
+
             sleep 2
           done
 
-          tail -f tunnel.log
+          if [ -z "$URL" ]; then
+            echo "❌ Cloudflare URL was not detected"
+            cat tunnel.log
+            exit 1
+          fi
+
+          echo "PUBLIC_URL=$URL" >> "$GITHUB_ENV"
+
+          echo "=============================================="
+          echo "        🖥️ UBUNTU TERMINAL READY"
+          echo "=============================================="
+          echo
+          echo "🌐 Terminal:"
+          echo "$URL"
+          echo
+          echo "OS: Ubuntu 24.04"
+          echo "Theme: Black"
+          echo "Access: Temporary"
+          echo
+          echo "=============================================="
+
+
+      # ======================================================
+      # 7. Keep server alive
+      # ======================================================
+      - name: ⏳ Keep Ubuntu Server Online
+        run: |
+          echo "Ubuntu server is running."
+          echo "Workflow will remain active for up to 6 hours."
+          echo
+
+          while true; do
+            if ! docker ps --format '{{.Names}}' | grep -q '^cynet-ubuntu$'; then
+              echo "❌ Ubuntu container stopped."
+              exit 1
+            fi
+
+            sleep 30
+          done
