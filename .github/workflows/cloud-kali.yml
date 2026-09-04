@@ -10,23 +10,21 @@ jobs:
 
     steps:
 
-      # ======================================================
-      # 1. Install required host components
-      # ======================================================
+      # ==========================================================
+      # 1. Install host dependencies
+      # ==========================================================
       - name: 📦 Install Cloudflared & TTYD
         run: |
           set -e
 
           sudo apt-get update -y -q
 
-          # Cloudflared
           sudo wget -q \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -O /usr/local/bin/cloudflared
 
           sudo chmod +x /usr/local/bin/cloudflared
 
-          # TTYD
           sudo wget -q \
             https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
             -O /usr/local/bin/ttyd
@@ -37,10 +35,10 @@ jobs:
           echo "✅ TTYD installed"
 
 
-      # ======================================================
+      # ==========================================================
       # 2. Create Ubuntu container
-      # ======================================================
-      - name: 🐧 Create Ubuntu 24.04 Server
+      # ==========================================================
+      - name: 🐧 Create Ubuntu 24.04
         run: |
           set -e
 
@@ -53,13 +51,13 @@ jobs:
             ubuntu:24.04 \
             tail -f /dev/null
 
-          echo "✅ Ubuntu 24.04 container started"
+          echo "✅ Ubuntu 24.04 started"
 
 
-      # ======================================================
-      # 3. Install Ubuntu prerequisites
-      # ======================================================
-      - name: 🔧 Install Ubuntu Server Tools
+      # ==========================================================
+      # 3. Install common Ubuntu server packages
+      # ==========================================================
+      - name: 🔧 Install Ubuntu Prerequisites
         run: |
           set -e
 
@@ -110,40 +108,161 @@ jobs:
 
             echo
             echo "=========================================="
-            echo "      UBUNTU 24.04 READY"
+            echo "       UBUNTU 24.04 READY"
             echo "=========================================="
           '
 
 
-      # ======================================================
-      # 4. Generate temporary browser access token
-      # ======================================================
-      - name: 🔐 Generate Temporary Access Token
-        run: |
-          TOKEN=$(openssl rand -hex 32)
-
-          echo "::add-mask::$TOKEN"
-
-          echo "ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-          echo "✅ Temporary access token generated"
-
-
-      # ======================================================
-      # 5. Start TTYD
-      # ======================================================
-      - name: 🌑 Start Black Browser Terminal
+      # ==========================================================
+      # 4. Generate random access token
+      # ==========================================================
+      - name: 🔐 Generate Access Token
         run: |
           set -e
 
-          # Token is used as the ttyd password.
-          # Browser clients can authenticate automatically
-          # through the generated access URL.
+          TOKEN=$(openssl rand -hex 32)
 
+          echo "::add-mask::$TOKEN"
+          echo "ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          echo "✅ Access token generated"
+
+
+      # ==========================================================
+      # 5. Create authenticated terminal proxy
+      # ==========================================================
+      - name: 🌑 Start Browser Terminal
+        run: |
+          set -e
+
+          cat > terminal_proxy.py <<'PY'
+          import http.server
+          import socketserver
+          import urllib.parse
+          import http.client
+          import os
+
+          TOKEN = os.environ["ACCESS_TOKEN"]
+          TARGET_HOST = "127.0.0.1"
+          TARGET_PORT = 7681
+          PROXY_PORT = 8080
+
+          class Proxy(http.server.BaseHTTPRequestHandler):
+
+              def check_token(self):
+                  parsed = urllib.parse.urlparse(self.path)
+                  query = urllib.parse.parse_qs(parsed.query)
+
+                  supplied = query.get("token", [""])[0]
+
+                  return supplied == TOKEN
+
+              def proxy(self):
+
+                  parsed = urllib.parse.urlparse(self.path)
+
+                  path = parsed.path
+
+                  if parsed.query:
+                      path += "?" + parsed.query
+
+                  conn = http.client.HTTPConnection(
+                      TARGET_HOST,
+                      TARGET_PORT,
+                      timeout=30
+                  )
+
+                  headers = {
+                      k: v
+                      for k, v in self.headers.items()
+                      if k.lower() not in (
+                          "host",
+                          "connection"
+                      )
+                  }
+
+                  conn.request(
+                      self.command,
+                      path,
+                      headers=headers
+                  )
+
+                  response = conn.getresponse()
+
+                  self.send_response(response.status)
+
+                  for key, value in response.getheaders():
+                      if key.lower() not in (
+                          "connection",
+                          "transfer-encoding"
+                      ):
+                          self.send_header(key, value)
+
+                  self.end_headers()
+
+                  while True:
+                      data = response.read(65536)
+
+                      if not data:
+                          break
+
+                      self.wfile.write(data)
+
+                  conn.close()
+
+              def do_GET(self):
+                  if not self.check_token():
+                      self.send_response(403)
+                      self.end_headers()
+                      self.wfile.write(b"Forbidden")
+                      return
+
+                  self.proxy()
+
+              def do_POST(self):
+                  if not self.check_token():
+                      self.send_response(403)
+                      self.end_headers()
+                      return
+
+                  self.proxy()
+
+              def do_OPTIONS(self):
+                  if not self.check_token():
+                      self.send_response(403)
+                      self.end_headers()
+                      return
+
+                  self.proxy()
+
+              def log_message(self, format, *args):
+                  return
+
+
+          class ThreadedServer(
+              socketserver.ThreadingMixIn,
+              socketserver.TCPServer
+          ):
+              allow_reuse_address = True
+
+
+          with ThreadedServer(
+              ("127.0.0.1", PROXY_PORT),
+              Proxy
+          ) as server:
+
+              print(
+                  f"Secure terminal proxy listening on "
+                  f"127.0.0.1:{PROXY_PORT}"
+              )
+
+              server.serve_forever()
+          PY
+
+          # Start ttyd without username/password.
           ttyd \
             -W \
             -p 7681 \
-            -c "terminal:${ACCESS_TOKEN}" \
             -t fontSize=16 \
             -t 'theme={"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
             docker exec -it cynet-ubuntu /bin/bash \
@@ -151,27 +270,35 @@ jobs:
 
           sleep 3
 
-          if ! curl -fsS http://127.0.0.1:7681/ >/dev/null; then
-            echo "❌ TTYD failed to start"
-            cat ttyd.log
+          # Start token proxy.
+          python3 terminal_proxy.py > proxy.log 2>&1 &
+
+          sleep 2
+
+          if ! curl -fsS \
+            "http://127.0.0.1:8080/?token=${ACCESS_TOKEN}" \
+            >/dev/null; then
+
+            echo "❌ Terminal proxy failed."
+            cat proxy.log
             exit 1
           fi
 
-          echo "✅ Browser terminal started"
+          echo "✅ Browser terminal ready"
 
 
-      # ======================================================
-      # 6. Create Cloudflare Tunnel
-      # ======================================================
-      - name: 🌐 Create Temporary Cloudflare Tunnel
+      # ==========================================================
+      # 6. Create Cloudflare public tunnel
+      # ==========================================================
+      - name: 🌐 Create Public Browser Link
         run: |
           set -e
 
           cloudflared tunnel \
-            --url http://127.0.0.1:7681 \
+            --url http://127.0.0.1:8080 \
             > tunnel.log 2>&1 &
 
-          echo "⏳ Waiting for Cloudflare URL..."
+          echo "⏳ Waiting for Cloudflare..."
 
           URL=""
 
@@ -189,38 +316,47 @@ jobs:
           done
 
           if [ -z "$URL" ]; then
-            echo "❌ Cloudflare URL was not detected"
+            echo "❌ Cloudflare URL was not detected."
             cat tunnel.log
             exit 1
           fi
 
-          echo "PUBLIC_URL=$URL" >> "$GITHUB_ENV"
+          DIRECT_URL="${URL}/?token=${ACCESS_TOKEN}"
 
-          echo "=============================================="
-          echo "        🖥️ UBUNTU TERMINAL READY"
-          echo "=============================================="
+          echo "::add-mask::$DIRECT_URL"
+
           echo
-          echo "🌐 Terminal:"
-          echo "$URL"
+          echo "=========================================================="
+          echo "        🖥️ UBUNTU 24.04 TERMINAL IS READY"
+          echo "=========================================================="
           echo
-          echo "OS: Ubuntu 24.04"
-          echo "Theme: Black"
-          echo "Access: Temporary"
+          echo "🌐 DIRECT BROWSER LINK:"
           echo
-          echo "=============================================="
+          echo "$DIRECT_URL"
+          echo
+          echo "=========================================================="
+          echo "🌑 Black Terminal"
+          echo "🐧 Ubuntu 24.04"
+          echo "🔐 Token-protected URL"
+          echo "⏳ Temporary server"
+          echo "=========================================================="
+          echo
 
 
-      # ======================================================
+      # ==========================================================
       # 7. Keep server alive
-      # ======================================================
-      - name: ⏳ Keep Ubuntu Server Online
+      # ==========================================================
+      - name: ⏳ Keep Server Online
         run: |
-          echo "Ubuntu server is running."
-          echo "Workflow will remain active for up to 6 hours."
-          echo
+          echo "Ubuntu server is running..."
+          echo "The server remains available while this job is active."
 
           while true; do
-            if ! docker ps --format '{{.Names}}' | grep -q '^cynet-ubuntu$'; then
+
+            if ! docker ps \
+              --format '{{.Names}}' \
+              | grep -q '^cynet-ubuntu$'; then
+
               echo "❌ Ubuntu container stopped."
               exit 1
             fi
