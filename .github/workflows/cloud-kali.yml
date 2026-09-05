@@ -1,4 +1,4 @@
-name: 🖥️ CYNET Cloud Ubuntu Linux
+name: 🖥️ CYNET Cloud Kali Linux
 
 on:
   workflow_dispatch:
@@ -9,10 +9,10 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 📦 Setup Ubuntu Linux Engine & Web Terminal (TTYD)
+      - name: 📦 Setup Kali Linux Engine & Web Terminal (TTYD)
         run: |
           echo "=========================================================="
-          echo "  🖥️ INSTALLING UBUNTU LINUX & SERVER SUITE..."
+          echo "  🖥️ INSTALLING KALI LINUX & SERVER SUITE..."
           echo "=========================================================="
 
           sudo apt-get update -y -q
@@ -25,14 +25,14 @@ jobs:
           sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
           sudo chmod +x /usr/local/bin/ttyd
 
-          # اجرای Ubuntu 24.04
+          # اجرای Kali Linux
           docker run -d \
             --name cynet-ubuntu \
             --network host \
-            ubuntu:24.04 \
+            kalilinux/kali-rolling \
             tail -f /dev/null
 
-          # نصب پیش‌نیازها و ابزارهای رایج Ubuntu Server
+          # نصب پیش‌نیازها و ابزارهای رایج Kali Linux
           docker exec cynet-ubuntu apt-get update -y
 
           docker exec cynet-ubuntu apt-get install -y -q \
@@ -74,7 +74,7 @@ jobs:
       - name: 🌐 Launch Interactive Web Terminal & Public Link
         run: |
           echo "=========================================================="
-          echo "  🎉 LAUNCHING INTERACTIVE UBUNTU WEB TERMINAL..."
+          echo "  🎉 LAUNCHING INTERACTIVE KALI LINUX WEB TERMINAL..."
           echo "=========================================================="
 
           # اجرای وب ترمینال با تم مشکی
@@ -100,10 +100,10 @@ jobs:
             if [ -n "$URL" ]; then
               echo ""
               echo "=========================================================="
-              echo "  🔥 YOUR UBUNTU LINUX IS LIVE & READY!"
+              echo "  🔥 YOUR KALI LINUX IS LIVE & READY!"
               echo "  👉 CLICK TO OPEN IN BROWSER: $URL"
               echo "  --------------------------------------------------------"
-              echo "  🖥️ Ubuntu 24.04 | Black Terminal | Keyboard Active"
+              echo "  🖥️ Kali Linux | Black Terminal | Keyboard Active"
               echo "=========================================================="
               echo ""
               break
