@@ -9,139 +9,358 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 📦 Setup Ubuntu 24.04 + SSH
+
+      # ==========================================================
+      # 1. SETUP UBUNTU + SSH
+      # ==========================================================
+      - name: 📦 Setup Ubuntu 24.04 + SSH Server
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
         run: |
           set -e
 
           echo "=========================================================="
-          echo "  🖥️ STARTING UBUNTU 24.04 SSH SERVER"
+          echo "  🖥️ CYNET CLOUD UBUNTU 24.04"
+          echo "  🔐 SSH SERVER SETUP"
           echo "=========================================================="
 
+          # ------------------------------------------------------
+          # Update host
+          # ------------------------------------------------------
           sudo apt-get update -y -q
 
-          # نصب ngrok
-          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+          # ------------------------------------------------------
+          # Install dependencies
+          # ------------------------------------------------------
+          sudo apt-get install -y -q \
+            curl \
+            ca-certificates \
+            python3 \
+            docker.io
+
+          # ------------------------------------------------------
+          # Install ngrok
+          # ------------------------------------------------------
+          echo ""
+          echo "📦 Installing ngrok..."
+
+          curl -sSL \
+            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
             | sudo tar -xz -C /usr/local/bin
+
+          sudo chmod +x /usr/local/bin/ngrok
+
+          # ------------------------------------------------------
+          # Configure ngrok
+          # ------------------------------------------------------
+          echo ""
+          echo "🔑 Configuring ngrok..."
 
           ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
-          # اجرای Ubuntu 24.04
+          # ------------------------------------------------------
+          # Pull Ubuntu 24.04
+          # ------------------------------------------------------
+          echo ""
+          echo "📥 Pulling Ubuntu 24.04..."
+
+          docker pull ubuntu:24.04
+
+          # ------------------------------------------------------
+          # Remove old container if exists
+          # ------------------------------------------------------
+          docker rm -f cynet-ubuntu 2>/dev/null || true
+
+          # ------------------------------------------------------
+          # Start Ubuntu container
+          #
+          # --network host
+          # makes SSH port 22 available to the host
+          # ------------------------------------------------------
+          echo ""
+          echo "🚀 Starting Ubuntu 24.04 container..."
+
           docker run -d \
             --name cynet-ubuntu \
             --network host \
             ubuntu:24.04 \
             tail -f /dev/null
 
-          # نصب ابزارها + SSH Server
-          docker exec cynet-ubuntu apt-get update -y
+          # ------------------------------------------------------
+          # Install Ubuntu packages
+          # ------------------------------------------------------
+          echo ""
+          echo "📦 Installing Ubuntu packages..."
 
-          docker exec cynet-ubuntu apt-get install -y -q \
-            openssh-server \
-            sudo \
-            curl \
-            wget \
-            git \
-            nano \
-            vim \
-            unzip \
-            zip \
-            tar \
-            gzip \
-            ca-certificates \
-            gnupg \
-            lsb-release \
-            software-properties-common \
-            net-tools \
-            iproute2 \
-            iputils-ping \
-            dnsutils \
-            openssh-client \
-            python3 \
-            python3-pip \
-            python3-venv \
-            build-essential \
-            gcc \
-            g++ \
-            make \
-            tmux \
-            screen \
-            htop \
-            jq \
-            rsync \
-            socat \
-            zsh
+          docker exec cynet-ubuntu bash -c "
+            apt-get update -y
 
-          # آماده‌سازی SSH
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+              openssh-server \
+              sudo \
+              curl \
+              wget \
+              git \
+              nano \
+              vim \
+              unzip \
+              zip \
+              tar \
+              gzip \
+              ca-certificates \
+              gnupg \
+              lsb-release \
+              software-properties-common \
+              net-tools \
+              iproute2 \
+              iputils-ping \
+              dnsutils \
+              openssh-client \
+              python3 \
+              python3-pip \
+              python3-venv \
+              build-essential \
+              gcc \
+              g++ \
+              make \
+              tmux \
+              screen \
+              htop \
+              jq \
+              rsync \
+              socat \
+              zsh
+          "
+
+          # ------------------------------------------------------
+          # Prepare SSH
+          # ------------------------------------------------------
+          echo ""
+          echo "🔐 Configuring SSH..."
+
           docker exec cynet-ubuntu mkdir -p /run/sshd
 
-          # تنظیم رمز root
-          docker exec cynet-ubuntu bash -c \
-            "echo 'root:${SSH_PASSWORD}' | chpasswd"
+          # Generate SSH host keys
+          docker exec cynet-ubuntu ssh-keygen -A
 
-          # فعال کردن ورود SSH با password
-          docker exec cynet-ubuntu bash -c \
-            "sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config"
+          # ------------------------------------------------------
+          # Set root password safely
+          # ------------------------------------------------------
+          printf 'root:%s\n' "$SSH_PASSWORD" \
+            | docker exec -i cynet-ubuntu chpasswd
 
-          docker exec cynet-ubuntu bash -c \
-            "sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
+          # ------------------------------------------------------
+          # SSH configuration
+          # ------------------------------------------------------
+          docker exec cynet-ubuntu bash -c '
+            cat > /etc/ssh/sshd_config.d/cynet.conf << "EOF"
+          PermitRootLogin yes
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          UsePAM yes
+          Port 22
+          EOF
+          '
 
-          # اجرای SSH
+          # ------------------------------------------------------
+          # Test SSH configuration
+          # ------------------------------------------------------
+          echo ""
+          echo "🔍 Testing SSH configuration..."
+
+          docker exec cynet-ubuntu \
+            /usr/sbin/sshd -t
+
+          # ------------------------------------------------------
+          # Start SSH server
+          # ------------------------------------------------------
+          echo ""
+          echo "🚀 Starting SSH server..."
+
           docker exec -d cynet-ubuntu \
             /usr/sbin/sshd -D
 
           sleep 3
 
-          echo "SSH server started."
+          # ------------------------------------------------------
+          # Verify SSH is listening
+          # ------------------------------------------------------
+          echo ""
+          echo "🔍 Checking SSH..."
 
+          if docker exec cynet-ubuntu \
+            bash -c "ss -lnt | grep -q ':22 '"; then
+
+            echo "✅ SSH is listening on port 22"
+
+          else
+
+            echo "❌ SSH is NOT listening!"
+            echo ""
+            docker exec cynet-ubuntu \
+              ps aux | grep sshd || true
+
+            exit 1
+          fi
+
+          echo ""
+          echo "=========================================================="
+          echo "  ✅ UBUNTU 24.04 READY"
+          echo "  ✅ SSH SERVER READY"
+          echo "=========================================================="
+
+
+      # ==========================================================
+      # 2. START NGROK
+      # ==========================================================
       - name: 🌐 Start ngrok SSH Tunnel
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+
         run: |
           set -e
 
+          echo ""
           echo "=========================================================="
           echo "  🌐 STARTING NGROK TCP TUNNEL"
           echo "=========================================================="
 
+          # ------------------------------------------------------
+          # Start ngrok
+          # ------------------------------------------------------
           ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
           nohup ngrok tcp 22 > ngrok.log 2>&1 &
 
-          sleep 5
+          NGROK_PID=$!
 
+          echo "ngrok PID: $NGROK_PID"
+
+          # ------------------------------------------------------
+          # Wait for ngrok API
+          # ------------------------------------------------------
           echo ""
-          echo "=========================================================="
-          echo "  🔥 YOUR UBUNTU SSH SERVER IS LIVE"
-          echo "=========================================================="
+          echo "⏳ Waiting for ngrok..."
 
-          curl -s http://127.0.0.1:4040/api/tunnels \
-            | python3 -c '
-          import sys
+          NGROK_URL=""
+
+          for i in {1..30}; do
+
+            sleep 2
+
+            echo "Checking ngrok... $i/30"
+
+            # Check whether process still exists
+            if ! kill -0 "$NGROK_PID" 2>/dev/null; then
+
+              echo ""
+              echo "❌ ngrok process stopped!"
+              echo ""
+              echo "================ ngrok.log ================"
+              cat ngrok.log || true
+              echo "============================================"
+
+              exit 1
+            fi
+
+            # Query ngrok local API
+            if curl -fsS \
+              http://127.0.0.1:4040/api/tunnels \
+              -o /tmp/ngrok.json 2>/dev/null; then
+
+              # Extract TCP URL
+              NGROK_URL=$(
+                python3 -c '
           import json
 
-          data = json.load(sys.stdin)
+          try:
+              with open("/tmp/ngrok.json", "r") as f:
+                  data = json.load(f)
 
-          for tunnel in data.get("tunnels", []):
-              url = tunnel.get("public_url", "")
+              for tunnel in data.get("tunnels", []):
+                  url = tunnel.get("public_url", "")
 
-              if url.startswith("tcp://"):
-                  address = url.replace("tcp://", "")
-                  host, port = address.rsplit(":", 1)
+                  if url.startswith("tcp://"):
+                      print(url)
+                      break
 
-                  print("")
-                  print("SSH Host : " + host)
-                  print("SSH Port : " + port)
-                  print("")
-                  print("SSH Command:")
-                  print("ssh root@" + host + " -p " + port)
-                  print("")
-          '
+          except Exception:
+              pass
+                ' 2>/dev/null || true
+              )
 
+              if [ -n "$NGROK_URL" ]; then
+                break
+              fi
+
+            fi
+
+          done
+
+          # ------------------------------------------------------
+          # Check result
+          # ------------------------------------------------------
+          if [ -z "$NGROK_URL" ]; then
+
+            echo ""
+            echo "=========================================================="
+            echo "  ❌ NGROK FAILED"
+            echo "=========================================================="
+
+            echo ""
+            echo "--------------- ngrok.log ----------------"
+            cat ngrok.log || true
+            echo "-------------------------------------------"
+
+            echo ""
+            echo "--------------- ngrok process ------------"
+            ps aux | grep '[n]grok' || true
+
+            echo ""
+            echo "--------------- ngrok API ----------------"
+            curl -v http://127.0.0.1:4040/api/tunnels || true
+
+            exit 1
+          fi
+
+          # ------------------------------------------------------
+          # Parse ngrok address
+          # ------------------------------------------------------
+          ADDRESS="${NGROK_URL#tcp://}"
+
+          HOST="${ADDRESS%:*}"
+          PORT="${ADDRESS##*:}"
+
+          # ------------------------------------------------------
+          # Display connection information
+          # ------------------------------------------------------
+          echo ""
+          echo ""
           echo "=========================================================="
-          echo "  ⏳ Server remains online until the GitHub job ends."
+          echo "  🔥 YOUR UBUNTU SSH SERVER IS LIVE!"
           echo "=========================================================="
+          echo ""
+          echo "  🖥️ OS       : Ubuntu 24.04"
+          echo "  🔐 Service  : SSH"
+          echo "  👤 Username : root"
+          echo "  🌐 Host     : $HOST"
+          echo "  🔌 Port     : $PORT"
+          echo ""
+          echo "----------------------------------------------------------"
+          echo "  SSH COMMAND"
+          echo "----------------------------------------------------------"
+          echo ""
+          echo "  ssh root@$HOST -p $PORT"
+          echo ""
+          echo "=========================================================="
+          echo "  ⏳ SERVER WILL STAY ONLINE UNTIL THIS JOB ENDS"
+          echo "=========================================================="
+          echo ""
 
+          # ------------------------------------------------------
+          # Keep GitHub Action alive
+          # ------------------------------------------------------
           tail -f ngrok.log
