@@ -1,4 +1,4 @@
-name: 🖥️ CYNET Cloud Ubuntu Linux
+name: 🖥️ CYNET Cloud Ubuntu Linux SSH
 
 on:
   workflow_dispatch:
@@ -9,21 +9,24 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 📦 Setup Ubuntu Linux Engine & Web Terminal (TTYD)
+      - name: 📦 Setup Ubuntu 24.04 + SSH
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
+          set -e
+
           echo "=========================================================="
-          echo "  🖥️ INSTALLING UBUNTU LINUX & SERVER SUITE..."
+          echo "  🖥️ STARTING UBUNTU 24.04 SSH SERVER"
           echo "=========================================================="
 
           sudo apt-get update -y -q
 
-          # نصب cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
-          sudo chmod +x /usr/local/bin/cloudflared
+          # نصب ngrok
+          curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+            | sudo tar -xz -C /usr/local/bin
 
-          # نصب ttyd
-          sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
-          sudo chmod +x /usr/local/bin/ttyd
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
           # اجرای Ubuntu 24.04
           docker run -d \
@@ -32,10 +35,11 @@ jobs:
             ubuntu:24.04 \
             tail -f /dev/null
 
-          # نصب پیش‌نیازها و ابزارهای رایج Ubuntu Server
+          # نصب ابزارها + SSH Server
           docker exec cynet-ubuntu apt-get update -y
 
           docker exec cynet-ubuntu apt-get install -y -q \
+            openssh-server \
             sudo \
             curl \
             wget \
@@ -50,7 +54,6 @@ jobs:
             gnupg \
             lsb-release \
             software-properties-common \
-            apt-transport-https \
             net-tools \
             iproute2 \
             iputils-ping \
@@ -71,46 +74,74 @@ jobs:
             socat \
             zsh
 
-      - name: 🌐 Launch Interactive Web Terminal & Public Link
-        run: |
-          echo "=========================================================="
-          echo "  🎉 LAUNCHING INTERACTIVE UBUNTU WEB TERMINAL..."
-          echo "=========================================================="
+          # آماده‌سازی SSH
+          docker exec cynet-ubuntu mkdir -p /run/sshd
 
-          # اجرای وب ترمینال با تم مشکی
-          ttyd \
-            -W \
-            -p 7681 \
-            -t fontSize=16 \
-            -t theme='{"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
-            docker exec -it cynet-ubuntu /bin/bash \
-            > /dev/null 2>&1 &
+          # تنظیم رمز root
+          docker exec cynet-ubuntu bash -c \
+            "echo 'root:${SSH_PASSWORD}' | chpasswd"
+
+          # فعال کردن ورود SSH با password
+          docker exec cynet-ubuntu bash -c \
+            "sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config"
+
+          docker exec cynet-ubuntu bash -c \
+            "sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
+
+          # اجرای SSH
+          docker exec -d cynet-ubuntu \
+            /usr/sbin/sshd -D
 
           sleep 3
 
-          # ایجاد Cloudflare Tunnel
-          cloudflared tunnel --url http://localhost:7681 > tunnel.log 2>&1 &
+          echo "SSH server started."
+
+      - name: 🌐 Start ngrok SSH Tunnel
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          set -e
+
+          echo "=========================================================="
+          echo "  🌐 STARTING NGROK TCP TUNNEL"
+          echo "=========================================================="
+
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+
+          nohup ngrok tcp 22 > ngrok.log 2>&1 &
 
           sleep 5
 
-          for i in {1..20}; do
+          echo ""
+          echo "=========================================================="
+          echo "  🔥 YOUR UBUNTU SSH SERVER IS LIVE"
+          echo "=========================================================="
 
-            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          curl -s http://127.0.0.1:4040/api/tunnels \
+            | python3 -c '
+          import sys
+          import json
 
-            if [ -n "$URL" ]; then
-              echo ""
-              echo "=========================================================="
-              echo "  🔥 YOUR UBUNTU LINUX IS LIVE & READY!"
-              echo "  👉 CLICK TO OPEN IN BROWSER: $URL"
-              echo "  --------------------------------------------------------"
-              echo "  🖥️ Ubuntu 24.04 | Black Terminal | Keyboard Active"
-              echo "=========================================================="
-              echo ""
-              break
-            fi
+          data = json.load(sys.stdin)
 
-            sleep 2
-          done
+          for tunnel in data.get("tunnels", []):
+              url = tunnel.get("public_url", "")
 
-          tail -f tunnel.log
+              if url.startswith("tcp://"):
+                  address = url.replace("tcp://", "")
+                  host, port = address.rsplit(":", 1)
 
+                  print("")
+                  print("SSH Host : " + host)
+                  print("SSH Port : " + port)
+                  print("")
+                  print("SSH Command:")
+                  print("ssh root@" + host + " -p " + port)
+                  print("")
+          '
+
+          echo "=========================================================="
+          echo "  ⏳ Server remains online until the GitHub job ends."
+          echo "=========================================================="
+
+          tail -f ngrok.log
